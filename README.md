@@ -461,6 +461,31 @@ ft = adapter.format_finetune_data(
 # ft["messages"] is an OpenAI-compatible message list with assistant response appended
 ```
 
+## Live Compatibility Tests (Optimizers + Agents)
+
+This repo includes live integration tests that verify `TemplateAdapter` works with DSPy optimizers and agentic modules.
+
+Covered:
+
+- `BootstrapFewShot`
+- `MIPROv2`
+- `GEPA` (when available in your DSPy version)
+- `ReAct`
+- `CodeAct` (when supported by your DSPy version/runtime)
+- `RML` availability check (explicit skip if not present)
+
+Run them with `uv`:
+
+```bash
+RUN_LIVE_DSPY=1 uv run python -m pytest -q dspy_template_adapter/tests/test_live_dspy_compat.py -s
+```
+
+Notes:
+
+- These tests are **skipped by default** (they need network/API keys).
+- They use `gpt-4.1-nano` for consistency.
+- On DSPy versions where a feature is not present (for example `GEPA` or `RML`), tests skip with an explicit reason.
+
 ## API Reference
 
 ```

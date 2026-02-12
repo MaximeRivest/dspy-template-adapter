@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import pytest
 import dspy
 
 from dspy_template_adapter import TemplateAdapter
+
+# Tiny valid PNG files (1x1 px) to avoid requiring Pillow in test env.
+_RED_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+_BLUE_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC"
 
 
 # ---------------------------------------------------------------------------
@@ -506,11 +511,10 @@ class TestImages:
 
     @pytest.fixture(autouse=True)
     def _create_test_image(self, tmp_path):
-        """Create a tiny PNG for each test."""
-        from PIL import Image as PILImage
-
+        """Create a tiny PNG for each test (no Pillow dependency)."""
         self.img_path = str(tmp_path / "red.png")
-        PILImage.new("RGB", (10, 10), color="red").save(self.img_path)
+        with open(self.img_path, "wb") as f:
+            f.write(base64.b64decode(_RED_PNG_B64))
 
     def _image_sig(self):
         from dspy.adapters.types import Image
@@ -546,7 +550,7 @@ class TestImages:
             ],
             parse_mode="full_text",
         )
-        img = Image.from_file(self.img_path)
+        img = Image(self.img_path)
         msgs = adapter.format(Describe, demos=[], inputs={"image": img})
 
         assert len(msgs) == 2
@@ -566,14 +570,13 @@ class TestImages:
             messages=[{"role": "user", "content": "{image}"}],
             parse_mode="full_text",
         )
-        img = Image.from_file(self.img_path)
+        img = Image(self.img_path)
         msgs = adapter.format(Describe, demos=[], inputs={"image": img})
         img_blocks = [b for b in msgs[0]["content"] if b.get("type") == "image_url"]
         assert len(img_blocks) == 1
         assert img_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
     def test_multi_image_format(self):
-        from PIL import Image as PILImage
         from dspy.adapters.types import Image
 
         Compare = self._multi_image_sig()
@@ -581,7 +584,8 @@ class TestImages:
         import os
 
         blue_path = os.path.join(os.path.dirname(self.img_path), "blue.png")
-        PILImage.new("RGB", (10, 10), color="blue").save(blue_path)
+        with open(blue_path, "wb") as f:
+            f.write(base64.b64decode(_BLUE_PNG_B64))
 
         adapter = TemplateAdapter(
             messages=[
@@ -593,8 +597,8 @@ class TestImages:
             Compare,
             demos=[],
             inputs={
-                "image_a": Image.from_file(self.img_path),
-                "image_b": Image.from_file(blue_path),
+                "image_a": Image(self.img_path),
+                "image_b": Image(blue_path),
             },
         )
 
@@ -623,7 +627,7 @@ class TestImages:
             ],
             parse_mode="full_text",
         )
-        img = Image.from_file(self.img_path)
+        img = Image(self.img_path)
         msgs = adapter.format(
             Analyze,
             demos=[],

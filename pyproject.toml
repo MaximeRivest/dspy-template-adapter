@@ -41,3 +41,8 @@ include = ["dspy_template_adapter*"]
 
 [tool.pytest.ini_options]
 testpaths = ["dspy_template_adapter/tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
