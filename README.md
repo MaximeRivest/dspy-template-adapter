@@ -486,6 +486,23 @@ Notes:
 - They use `gpt-4.1-nano` for consistency.
 - On DSPy versions where a feature is not present (for example `GEPA` or `RML`), tests skip with an explicit reason.
 
+### Deep optimizer/message audit (JSON output)
+
+For a full before/after audit (accuracy, instruction changes, and raw message payloads from `lm.history`) run:
+
+```bash
+uv sync
+uv run python scripts/live_optimizer_audit.py
+```
+
+Outputs are written under:
+
+```text
+artifacts/optimizer_audit/YYYYMMDD-HHMMSS/
+```
+
+Detailed guide: `docs/optimizer-audit.md`
+
 ## API Reference
 
 ```

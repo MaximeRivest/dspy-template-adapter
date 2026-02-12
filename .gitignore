@@ -12,3 +12,6 @@ build/
 venv/
 *.so
 .DS_Store
+
+# Local audit outputs
+artifacts/optimizer_audit/
