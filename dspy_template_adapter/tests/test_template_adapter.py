@@ -493,3 +493,147 @@ class TestPreview:
         )
         msgs = adapter.preview(Summarize)
         assert msgs[0]["content"] == "Static prompt"
+
+
+# ===========================================================================
+# Image support
+# ===========================================================================
+
+
+class TestImages:
+    """Verify that dspy.Image inputs are correctly split into multimodal
+    content blocks by the adapter's format() pipeline."""
+
+    @pytest.fixture(autouse=True)
+    def _create_test_image(self, tmp_path):
+        """Create a tiny PNG for each test."""
+        from PIL import Image as PILImage
+
+        self.img_path = str(tmp_path / "red.png")
+        PILImage.new("RGB", (10, 10), color="red").save(self.img_path)
+
+    def _image_sig(self):
+        from dspy.adapters.types import Image
+
+        class Describe(dspy.Signature):
+            """Describe the image."""
+
+            image: Image = dspy.InputField()
+            description: str = dspy.OutputField()
+
+        return Describe
+
+    def _multi_image_sig(self):
+        from dspy.adapters.types import Image
+
+        class Compare(dspy.Signature):
+            """Compare two images."""
+
+            image_a: Image = dspy.InputField()
+            image_b: Image = dspy.InputField()
+            comparison: str = dspy.OutputField()
+
+        return Compare
+
+    def test_single_image_format(self):
+        from dspy.adapters.types import Image
+
+        Describe = self._image_sig()
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Describe the image."},
+                {"role": "user", "content": "What is this? {image}"},
+            ],
+            parse_mode="full_text",
+        )
+        img = Image.from_file(self.img_path)
+        msgs = adapter.format(Describe, demos=[], inputs={"image": img})
+
+        assert len(msgs) == 2
+        # System message stays a plain string
+        assert isinstance(msgs[0]["content"], str)
+        # User message is split into content blocks
+        assert isinstance(msgs[1]["content"], list)
+        types = [block["type"] for block in msgs[1]["content"]]
+        assert "text" in types
+        assert "image_url" in types
+
+    def test_image_url_contains_base64(self):
+        from dspy.adapters.types import Image
+
+        Describe = self._image_sig()
+        adapter = TemplateAdapter(
+            messages=[{"role": "user", "content": "{image}"}],
+            parse_mode="full_text",
+        )
+        img = Image.from_file(self.img_path)
+        msgs = adapter.format(Describe, demos=[], inputs={"image": img})
+        img_blocks = [b for b in msgs[0]["content"] if b.get("type") == "image_url"]
+        assert len(img_blocks) == 1
+        assert img_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_multi_image_format(self):
+        from PIL import Image as PILImage
+        from dspy.adapters.types import Image
+
+        Compare = self._multi_image_sig()
+        # Create a second image
+        import os
+
+        blue_path = os.path.join(os.path.dirname(self.img_path), "blue.png")
+        PILImage.new("RGB", (10, 10), color="blue").save(blue_path)
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "user", "content": "A: {image_a}\nB: {image_b}\nCompare."},
+            ],
+            parse_mode="full_text",
+        )
+        msgs = adapter.format(
+            Compare,
+            demos=[],
+            inputs={
+                "image_a": Image.from_file(self.img_path),
+                "image_b": Image.from_file(blue_path),
+            },
+        )
+
+        assert len(msgs) == 1
+        blocks = msgs[0]["content"]
+        assert isinstance(blocks, list)
+        img_blocks = [b for b in blocks if b.get("type") == "image_url"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(img_blocks) == 2
+        assert len(text_blocks) >= 1  # at least text around/between images
+
+    def test_image_with_text_field(self):
+        """Image + regular text field in the same user message."""
+        from dspy.adapters.types import Image
+
+        class Analyze(dspy.Signature):
+            """Analyze an image."""
+
+            image: Image = dspy.InputField()
+            question: str = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "user", "content": "{question}\n{image}"},
+            ],
+            parse_mode="full_text",
+        )
+        img = Image.from_file(self.img_path)
+        msgs = adapter.format(
+            Analyze,
+            demos=[],
+            inputs={"image": img, "question": "What color?"},
+        )
+
+        blocks = msgs[0]["content"]
+        assert isinstance(blocks, list)
+        # Should have text block with the question, then image block
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        img_blocks = [b for b in blocks if b.get("type") == "image_url"]
+        assert any("What color?" in b["text"] for b in text_blocks)
+        assert len(img_blocks) == 1

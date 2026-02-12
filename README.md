@@ -37,7 +37,7 @@ adapter = TemplateAdapter(
 summarizer = Predict(Summarize, adapter=adapter)
 
 # 4. Configure LM and call
-dspy.configure(lm=dspy.LM("gpt-4o-mini"))
+dspy.configure(lm=dspy.LM("gpt-4.1-nano"))
 out = summarizer(text="DSPy is a framework for programming language models.")
 print(out.summary)
 ```
@@ -257,6 +257,105 @@ resp = chat(question="What is 2+2?", history=history)
 ```
 
 The directive expands each history entry into user/assistant message pairs. If omitted, history is auto-injected before the last user message.
+
+## Image Support
+
+The adapter works seamlessly with `dspy.Image` inputs. Images are automatically converted to multimodal content blocks (the `image_url` format the OpenAI API expects).
+
+### Single Image
+
+```python
+from dspy.adapters.types import Image
+
+class Describe(dspy.Signature):
+    """Describe the image."""
+    image: Image = dspy.InputField()
+    description: str = dspy.OutputField()
+
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "You describe images in one sentence."},
+        {"role": "user", "content": "What is in this image? {image}"},
+    ],
+    parse_mode="full_text",
+)
+
+dspy.configure(lm=dspy.LM("gpt-4.1-nano"))
+describer = Predict(Describe, adapter=adapter)
+img = Image.from_file("photo.png")
+out = describer(image=img)
+print(out.description)
+```
+
+The `{image}` placeholder is first rendered to DSPy's internal image marker, then `split_message_content_for_custom_types()` splits the user message into proper content blocks:
+
+```python
+# What the LM actually receives:
+[
+    {"role": "system", "content": "You describe images in one sentence."},
+    {"role": "user", "content": [
+        {"type": "text", "text": "What is in this image? "},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    ]}
+]
+```
+
+### Multiple Images
+
+```python
+from dspy.adapters.types import Image
+
+class Compare(dspy.Signature):
+    """Compare two images."""
+    image_a: Image = dspy.InputField()
+    image_b: Image = dspy.InputField()
+    comparison: str = dspy.OutputField()
+
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "Compare images in one sentence."},
+        {"role": "user", "content": "Image A: {image_a}\nImage B: {image_b}\nCompare them."},
+    ],
+    parse_mode="full_text",
+)
+
+comparer = Predict(Compare, adapter=adapter)
+out = comparer(
+    image_a=Image.from_file("red.png"),
+    image_b=Image.from_file("blue.png"),
+)
+print(out.comparison)
+```
+
+Each `{image_*}` placeholder becomes its own `image_url` block, with text blocks for the surrounding content.
+
+### Images with Other Parse Modes
+
+Images work with any parse mode — `full_text`, `json`, `xml`, or custom:
+
+```python
+from dspy.adapters.types import Image
+
+class Analyze(dspy.Signature):
+    """Analyze an image."""
+    image: Image = dspy.InputField()
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+    confidence: str = dspy.OutputField()
+
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "Answer the question about the image. Return JSON with keys: answer, confidence."},
+        {"role": "user", "content": "{question}\n{image}"},
+    ],
+    parse_mode="json",
+)
+
+dspy.configure(lm=dspy.LM("gpt-4.1-nano"))
+analyzer = Predict(Analyze, adapter=adapter)
+out = analyzer(image=Image.from_file("photo.png"), question="What color is this?")
+print(out.answer, out.confidence)
+```
 
 ## Custom Template Helpers
 
