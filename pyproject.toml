@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dspy-template-adapter"
-version = "0.2.0"
+version = "0.2.1"
 description = "A DSPy Adapter for exact-fidelity prompt templates with full control over messages."
 readme = "README.md"
 license = {text = "MIT"}
