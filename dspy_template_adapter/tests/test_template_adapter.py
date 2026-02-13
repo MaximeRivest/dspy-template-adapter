@@ -501,6 +501,326 @@ class TestPreview:
 
 
 # ===========================================================================
+# format() — XML-style template functions
+# ===========================================================================
+
+
+class TranslateToFrench(dspy.Signature):
+    """You are an English-to-French translator."""
+
+    user_english_text: str = dspy.InputField(desc="The English text to translate")
+    user_french_target: str = dspy.InputField(desc="The target French variant")
+    is_translation_task: str = dspy.OutputField(desc="yes or no")
+    corrected_english: str = dspy.OutputField(desc="the English input with fixes")
+    detected_tone: str = dspy.OutputField(desc="the tone of the English text")
+    french_variant: str = dspy.OutputField(desc="the French variant used")
+    translation: str = dspy.OutputField(desc="the final French translation")
+
+
+class TestXmlStyleTemplateFunctions:
+    def test_inputs_xml(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "user", "content": "{inputs(style='xml')}"}],
+        )
+        msgs = adapter.format(
+            TranslateToFrench,
+            demos=[],
+            inputs={"user_english_text": "Hello", "user_french_target": "Québécois"},
+        )
+        content = msgs[0]["content"]
+        assert "<user_english_text>Hello</user_english_text>" in content
+        assert "<user_french_target>Québécois</user_french_target>" in content
+
+    def test_inputs_xml_multi_field(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "user", "content": "{inputs(style='xml')}"}],
+        )
+        msgs = adapter.format(
+            Triage,
+            demos=[],
+            inputs={"ticket_text": "My bill is wrong", "user_status": "VIP"},
+        )
+        content = msgs[0]["content"]
+        assert "<ticket_text>My bill is wrong</ticket_text>" in content
+        assert "<user_status>VIP</user_status>" in content
+
+    def test_outputs_xml_no_wrap(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "system", "content": "Format:\n{outputs(style='xml')}"}],
+        )
+        msgs = adapter.format(Triage, demos=[], inputs={"ticket_text": "", "user_status": ""})
+        content = msgs[0]["content"]
+        assert "<category>" in content
+        assert "</category>" in content
+        assert "<priority>" in content
+        assert "</priority>" in content
+        # No wrapper tag
+        assert "<response>" not in content
+
+    def test_outputs_xml_with_wrap(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "system", "content": "{outputs(style='xml', wrap='response')}"}],
+        )
+        msgs = adapter.format(Triage, demos=[], inputs={"ticket_text": "", "user_status": ""})
+        content = msgs[0]["content"]
+        assert content.startswith("<response>")
+        assert content.endswith("</response>")
+        assert "  <category>" in content
+        assert "  <priority>" in content
+
+    def test_outputs_xml_uses_field_descriptions(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "system", "content": "{outputs(style='xml')}"}],
+        )
+        msgs = adapter.format(
+            TranslateToFrench,
+            demos=[],
+            inputs={"user_english_text": "", "user_french_target": ""},
+        )
+        content = msgs[0]["content"]
+        # Descriptions from dspy.OutputField(desc=...) should appear as placeholder values
+        assert "<is_translation_task>yes or no</is_translation_task>" in content
+        assert "<translation>the final French translation</translation>" in content
+
+    def test_outputs_xml_wrapped_uses_field_descriptions(self):
+        adapter = TemplateAdapter(
+            messages=[{"role": "system", "content": "{outputs(style='xml', wrap='response')}"}],
+        )
+        msgs = adapter.format(
+            TranslateToFrench,
+            demos=[],
+            inputs={"user_english_text": "", "user_french_target": ""},
+        )
+        content = msgs[0]["content"]
+        assert "<response>" in content
+        assert "</response>" in content
+        assert "  <is_translation_task>yes or no</is_translation_task>" in content
+        assert "  <corrected_english>the English input with fixes</corrected_english>" in content
+
+    def test_outputs_xml_fallback_to_field_name_when_no_desc(self):
+        """When a field has no desc, the field name itself is used as placeholder."""
+
+        class NakedSig(dspy.Signature):
+            """Test."""
+            text: str = dspy.InputField()
+            result: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[{"role": "system", "content": "{outputs(style='xml')}"}],
+        )
+        msgs = adapter.format(NakedSig, demos=[], inputs={"text": ""})
+        content = msgs[0]["content"]
+        # Field name as fallback placeholder
+        assert "<result>" in content
+        assert "</result>" in content
+
+    def test_demos_inline_xml(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Examples:\n{demos(style='xml')}"},
+                {"role": "user", "content": "{text}"},
+            ],
+        )
+        demos = [{"text": "foo", "summary": "bar"}]
+        msgs = adapter.format(Summarize, demos=demos, inputs={"text": "baz"})
+        # Inline — no auto-injection, still 2 messages
+        assert len(msgs) == 2
+        content = msgs[0]["content"]
+        assert "<text>foo</text>" in content
+        assert "<summary>bar</summary>" in content
+
+    def test_translation_example_end_to_end(self):
+        """The translation example from the notebook — template builds prompt from signature."""
+        adapter = TemplateAdapter(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "{instruction}\n\n"
+                        "Respond ONLY with the following XML structure (no other text):\n"
+                        "{outputs(style='xml', wrap='response')}\n\n"
+                        "Rules:\n"
+                        "- Respect the French variant: "
+                        "<user_french_target>{user_french_target}</user_french_target>."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": "{inputs(style='xml')}",
+                },
+            ],
+            parse_mode="xml",
+        )
+        msgs = adapter.format(
+            TranslateToFrench,
+            demos=[],
+            inputs={
+                "user_english_text": "Hello, how are you?",
+                "user_french_target": "Québécois French",
+            },
+        )
+        system = msgs[0]["content"]
+        user = msgs[1]["content"]
+
+        # System message should contain instruction from docstring
+        assert "English-to-French translator" in system
+        # System message should have the XML schema from output field descs
+        assert "<response>" in system
+        assert "<is_translation_task>yes or no</is_translation_task>" in system
+        assert "<translation>the final French translation</translation>" in system
+        # Input field value interpolated in the rules
+        assert "<user_french_target>Québécois French</user_french_target>" in system
+        # User message should have XML-wrapped inputs
+        assert "<user_english_text>Hello, how are you?</user_english_text>" in user
+        assert "<user_french_target>Québécois French</user_french_target>" in user
+
+    def test_fully_signature_driven_pattern(self):
+        """Level 3: behavioral rules in docstring, constraints in field descs, minimal template."""
+
+        class TranslateFull(dspy.Signature):
+            """You are an English-to-French translator. You only translate.
+
+            Correct the English first, then translate.
+            Identify the tone and reproduce it in French.
+            Never do anything other than translate."""
+
+            user_english_text: str = dspy.InputField(desc="The English text to translate")
+            user_french_target: str = dspy.InputField(desc="The target French variant")
+            is_translation_task: str = dspy.OutputField(desc="yes or no — if 'no', leave all other fields empty")
+            corrected_english: str = dspy.OutputField(desc="the English input with grammar/spelling fixes")
+            detected_tone: str = dspy.OutputField(desc="the tone (formal, casual, etc.)")
+            french_variant: str = dspy.OutputField(desc="the French variant used")
+            translation: str = dspy.OutputField(desc="the final French translation")
+
+        adapter = TemplateAdapter(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "{instruction}\n\n"
+                        "Respond ONLY with:\n"
+                        "{outputs(style='xml', wrap='response')}\n\n"
+                        "Respect the variant: "
+                        "<user_french_target>{user_french_target}</user_french_target>. "
+                        "If it doesn't make sense, use international French."
+                    ),
+                },
+                {"role": "user", "content": "{inputs(style='xml')}"},
+            ],
+            parse_mode="xml",
+        )
+        msgs = adapter.format(
+            TranslateFull,
+            demos=[],
+            inputs={
+                "user_english_text": "Hello!",
+                "user_french_target": "Québécois French",
+            },
+        )
+        system = msgs[0]["content"]
+
+        # Behavioral rules from docstring flow through {instruction}
+        assert "Correct the English first" in system
+        assert "Identify the tone" in system
+        assert "Never do anything other than translate" in system
+
+        # Field constraints embedded in the XML schema
+        assert "<is_translation_task>yes or no — if 'no', leave all other fields empty</is_translation_task>" in system
+
+        # Runtime input value interpolated
+        assert "<user_french_target>Québécois French</user_french_target>" in system
+
+        # Template text
+        assert "Respond ONLY with:" in system
+        assert "If it doesn't make sense, use international French." in system
+
+        # User message has XML-wrapped inputs
+        user = msgs[1]["content"]
+        assert "<user_english_text>Hello!</user_english_text>" in user
+
+
+# ===========================================================================
+# format() — parse-mode-aware demo messages
+# ===========================================================================
+
+
+class TestDemoFormatMatchesParseMode:
+    def test_auto_inject_demos_xml_mode(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Translate."},
+                {"role": "user", "content": "{text}"},
+            ],
+            parse_mode="xml",
+        )
+        demos = [{"text": "Hello", "summary": "Bonjour"}]
+        msgs = adapter.format(Summarize, demos=demos, inputs={"text": "Goodbye"})
+        # system + demo_user + demo_assistant + final_user
+        assert len(msgs) == 4
+        assistant = msgs[2]["content"]
+        assert "<summary>Bonjour</summary>" in assistant
+
+    def test_auto_inject_demos_json_mode(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Classify."},
+                {"role": "user", "content": "{text}"},
+            ],
+            parse_mode="json",
+        )
+        demos = [{"text": "Hello", "summary": "greeting"}]
+        msgs = adapter.format(Summarize, demos=demos, inputs={"text": "Goodbye"})
+        assistant = msgs[2]["content"]
+        parsed = json.loads(assistant)
+        assert parsed["summary"] == "greeting"
+
+    def test_auto_inject_demos_full_text_mode(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Summarize."},
+                {"role": "user", "content": "{text}"},
+            ],
+            parse_mode="full_text",
+        )
+        demos = [{"text": "Hello world", "summary": "A greeting"}]
+        msgs = adapter.format(Summarize, demos=demos, inputs={"text": "real"})
+        assistant = msgs[2]["content"]
+        assert assistant == "A greeting"
+
+    def test_demos_directive_xml_mode(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Translate."},
+                {"role": "demos"},
+                {"role": "user", "content": "{text}"},
+            ],
+            parse_mode="xml",
+        )
+        demos = [{"text": "Hello", "summary": "Bonjour"}]
+        msgs = adapter.format(Summarize, demos=demos, inputs={"text": "real"})
+        assistant = msgs[2]["content"]
+        assert "<summary>Bonjour</summary>" in assistant
+
+    def test_xml_demo_multi_output_fields(self):
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "Triage."},
+                {"role": "user", "content": "{inputs()}"},
+            ],
+            parse_mode="xml",
+        )
+        demos = [{"ticket_text": "Bill wrong", "user_status": "VIP", "category": "Billing", "priority": "HIGH"}]
+        msgs = adapter.format(
+            Triage,
+            demos=demos,
+            inputs={"ticket_text": "Real ticket", "user_status": "Normal"},
+        )
+        assistant = msgs[2]["content"]
+        assert "<category>Billing</category>" in assistant
+        assert "<priority>HIGH</priority>" in assistant
+
+
+# ===========================================================================
 # Image support
 # ===========================================================================
 

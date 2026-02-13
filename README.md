@@ -64,9 +64,9 @@ Inside message `content` strings, you can use:
 |--------|-------------|
 | `{field_name}` | Replaced with the value of that input field |
 | `{instruction}` | Replaced with the signature's docstring |
-| `{inputs()}` | Renders all input fields. Supports `style='yaml'`, `style='json'`, or default |
-| `{outputs()}` | Renders output field descriptions. Supports `style='schema'` for JSON schema |
-| `{demos()}` | Renders few-shot demos inline. Supports `style='json'`, `style='yaml'`, or default |
+| `{inputs()}` | Renders all input fields. Supports `style='yaml'`, `style='json'`, `style='xml'`, or default |
+| `{outputs()}` | Renders output field descriptions. Supports `style='schema'`, `style='xml'` (+ optional `wrap`), or default |
+| `{demos()}` | Renders few-shot demos inline. Supports `style='json'`, `style='yaml'`, `style='xml'`, or default |
 | `{my_helper()}` | Calls a custom function registered with `register_helper()` |
 | `{{` / `}}` | Literal braces (escaped) |
 
@@ -114,7 +114,9 @@ The JSON parser uses `json_repair` for robustness — it handles malformed JSON 
 
 ## XML Output
 
-Some models (especially Claude) perform well with XML-tagged output:
+Some models (especially Claude) perform well with XML-tagged output.
+
+### Hardcoded XML (explicit control)
 
 ```python
 class Review(dspy.Signature):
@@ -139,7 +141,52 @@ out = reviewer(text="This product exceeded all my expectations!")
 print(out.sentiment, out.reasoning)
 ```
 
+### Signature-driven XML (build the prompt from the signature)
+
+Instead of repeating field names and descriptions in the template, use `{outputs(style='xml')}` and `{inputs(style='xml')}` to generate the XML structure from the signature's metadata:
+
+```python
+class TranslateToFrench(dspy.Signature):
+    """You are an English-to-French translator. You only translate."""
+
+    user_english_text: str = dspy.InputField(desc="The English text to translate")
+    user_french_target: str = dspy.InputField(desc="The target French variant")
+
+    is_translation_task: str = dspy.OutputField(desc="yes or no")
+    corrected_english: str = dspy.OutputField(desc="the English input with fixes")
+    detected_tone: str = dspy.OutputField(desc="the tone of the English text")
+    french_variant: str = dspy.OutputField(desc="the French variant used")
+    translation: str = dspy.OutputField(desc="the final French translation")
+
+adapter = TemplateAdapter(
+    messages=[
+        {
+            "role": "system",
+            "content": (
+                "{instruction}\n\n"
+                "Respond ONLY with the following XML structure (no other text):\n"
+                "{outputs(style='xml', wrap='response')}\n\n"
+                "Rules:\n"
+                "- First decide if this is a translation task.\n"
+                "- Correct the English first, then translate.\n"
+                "- Respect the French variant: "
+                "<user_french_target>{user_french_target}</user_french_target>."
+            ),
+        },
+        {
+            "role": "user",
+            "content": "{inputs(style='xml')}",
+        },
+    ],
+    parse_mode="xml",
+)
+```
+
+The `{outputs(style='xml', wrap='response')}` generates the XML schema block from the output field descriptions, and `{inputs(style='xml')}` wraps each input value in its field-name tag. If you add, remove, or rename a field in the signature, the prompt updates automatically.
+
 XML parsing handles tags anywhere in the response, multiline values, and raises clear errors for missing fields. XML avoids the common problem of models escaping quotes inside JSON string values.
+
+When `parse_mode="xml"`, auto-injected demo assistant messages also use XML format (`<field>value</field>` tags) so the LM sees consistent formatting throughout the conversation.
 
 ## Template Functions
 
@@ -151,6 +198,9 @@ XML parsing handles tags anywhere in the response, multiline values, and raises 
 
 # JSON object
 {"role": "user", "content": "{inputs(style='json')}"}
+
+# XML tags: <field_name>value</field_name>
+{"role": "user", "content": "{inputs(style='xml')}"}
 ```
 
 ### `{outputs()}` — render output field descriptions
@@ -161,6 +211,28 @@ XML parsing handles tags anywhere in the response, multiline values, and raises 
 
 # JSON schema
 {"role": "system", "content": "Match this schema:\n{outputs(style='schema')}"}
+
+# XML tags with field descriptions as placeholder values
+{"role": "system", "content": "Respond with:\n{outputs(style='xml')}"}
+
+# XML tags wrapped in a root element (indented)
+{"role": "system", "content": "Respond with:\n{outputs(style='xml', wrap='response')}"}
+```
+
+The `xml` style pulls descriptions from `dspy.OutputField(desc="…")`. For example, a signature with:
+
+```python
+translation: str = dspy.OutputField(desc="the final French translation")
+detected_tone: str = dspy.OutputField(desc="the tone of the English text")
+```
+
+renders `{outputs(style='xml', wrap='response')}` as:
+
+```xml
+<response>
+  <translation>the final French translation</translation>
+  <detected_tone>the tone of the English text</detected_tone>
+</response>
 ```
 
 ### `{demos()}` — render few-shot examples inline
@@ -168,9 +240,12 @@ XML parsing handles tags anywhere in the response, multiline values, and raises 
 ```python
 # Demos as JSON objects inside a message
 {"role": "system", "content": "Examples:\n{demos(style='json')}"}
+
+# Demos as XML tags
+{"role": "system", "content": "Examples:\n{demos(style='xml')}"}
 ```
 
-Styles: `'json'`, `'yaml'`, or default (numbered text blocks).
+Styles: `'json'`, `'yaml'`, `'xml'`, or default (numbered text blocks).
 
 ## Few-Shot Demos: Three Strategies
 

@@ -406,11 +406,13 @@ class TemplateAdapter(Adapter):
     # --- Template functions ---
 
     @staticmethod
-    def _render_inputs(ctx: dict[str, Any], signature: type[Signature], style: str = "default") -> str:
+    def _render_inputs(ctx: dict[str, Any], signature: type[Signature], style: str = "default", **kwargs) -> str:
         parts = []
         for name in signature.input_fields:
             val = ctx.get(name, "")
-            if style == "yaml":
+            if style == "xml":
+                parts.append(f"<{name}>{val}</{name}>")
+            elif style == "yaml":
                 parts.append(f"{name}: {val}")
             elif style == "json":
                 parts.append(f'"{name}": {json.dumps(val, ensure_ascii=False)}')
@@ -421,7 +423,7 @@ class TemplateAdapter(Adapter):
         return "\n".join(parts)
 
     @staticmethod
-    def _render_outputs(signature: type[Signature], style: str = "default") -> str:
+    def _render_outputs(signature: type[Signature], style: str = "default", **kwargs) -> str:
         if style == "schema":
             schema: dict[str, Any] = {}
             for name, field in signature.output_fields.items():
@@ -430,6 +432,19 @@ class TemplateAdapter(Adapter):
                 except Exception:
                     schema[name] = {"type": get_annotation_name(field.annotation)}
             return json.dumps(schema, indent=2, ensure_ascii=False)
+
+        if style == "xml":
+            wrap = kwargs.get("wrap", "")
+            indent_str = "  " if wrap else ""
+            parts = []
+            for name, field in signature.output_fields.items():
+                desc = (getattr(field, "json_schema_extra", None) or {}).get("desc", name)
+                parts.append(f"{indent_str}<{name}>{desc}</{name}>")
+            body = "\n".join(parts)
+            if wrap:
+                return f"<{wrap}>\n{body}\n</{wrap}>"
+            return body
+
         # Default: numbered list
         return get_field_description_string(signature.output_fields)
 
@@ -438,13 +453,20 @@ class TemplateAdapter(Adapter):
         demos: list[dict[str, Any]],
         signature: type[Signature],
         style: str = "default",
+        **kwargs,
     ) -> str:
         if not demos:
             return ""
         rendered = []
         all_fields = list(signature.input_fields) + list(signature.output_fields)
         for i, demo in enumerate(demos):
-            if style == "json":
+            if style == "xml":
+                lines = []
+                for k in all_fields:
+                    if k in demo:
+                        lines.append(f"<{k}>{demo[k]}</{k}>")
+                rendered.append("\n".join(lines))
+            elif style == "json":
                 d = {k: demo[k] for k in all_fields if k in demo}
                 rendered.append(json.dumps(serialize_for_json(d), indent=2, ensure_ascii=False))
             elif style == "yaml":
@@ -501,7 +523,13 @@ class TemplateAdapter(Adapter):
         signature: type[Signature],
         demos: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Format demos as user/assistant message pairs with JSON assistant output."""
+        """Format demos as user/assistant message pairs.
+
+        The assistant message format matches ``parse_mode``:
+        * ``"xml"`` → ``<field>value</field>`` tags
+        * ``"full_text"`` → raw value (single output field only)
+        * Otherwise → JSON object
+        """
         messages = []
         for demo in demos:
             # User message: input fields
@@ -515,18 +543,27 @@ class TemplateAdapter(Adapter):
                 continue
             messages.append({"role": "user", "content": "\n".join(user_parts)})
 
-            # Assistant message: output fields as JSON
+            # Assistant message: output fields — format matches parse_mode
             out = {}
             for name in signature.output_fields:
                 if name in demo:
                     out[name] = demo[name]
-            
+
             # Only append assistant message if we actually have output data
             if out:
-                messages.append({
-                    "role": "assistant",
-                    "content": json.dumps(serialize_for_json(out), indent=2, ensure_ascii=False),
-                })
+                if self.parse_mode == "xml":
+                    parts = [f"<{k}>{v}</{k}>" for k, v in out.items()]
+                    messages.append({"role": "assistant", "content": "\n".join(parts)})
+                elif self.parse_mode == "full_text" and len(out) == 1:
+                    messages.append({
+                        "role": "assistant",
+                        "content": str(next(iter(out.values()))),
+                    })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": json.dumps(serialize_for_json(out), indent=2, ensure_ascii=False),
+                    })
         return messages
 
     # --- History expansion ---
