@@ -330,6 +330,83 @@ class TestHistory:
         assert msgs[1]["role"] == "user"
         assert "What is 2+2?" in msgs[1]["content"]
 
+    def test_history_directive_respects_full_text_mode(self):
+        class ChatSig(dspy.Signature):
+            question: str = dspy.InputField()
+            history: dspy.History = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "You are a chatbot."},
+                {"role": "history"},
+                {"role": "user", "content": "{question}"},
+            ],
+            parse_mode="full_text",
+        )
+        history = dspy.History(messages=[
+            {"question": "What is 1+1?", "answer": "2"},
+        ])
+        msgs = adapter.format(
+            ChatSig,
+            demos=[],
+            inputs={"question": "What is 2+2?", "history": history},
+        )
+
+        # assistant history message should be raw text in full_text mode
+        assert msgs[2]["role"] == "assistant"
+        assert msgs[2]["content"] == "2"
+
+    def test_history_directive_respects_xml_mode(self):
+        class ChatSig(dspy.Signature):
+            question: str = dspy.InputField()
+            history: dspy.History = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "You are a chatbot."},
+                {"role": "history"},
+                {"role": "user", "content": "{question}"},
+            ],
+            parse_mode="xml",
+        )
+        history = dspy.History(messages=[
+            {"question": "What is 1+1?", "answer": "2"},
+        ])
+        msgs = adapter.format(
+            ChatSig,
+            demos=[],
+            inputs={"question": "What is 2+2?", "history": history},
+        )
+
+        # assistant history message should be xml in xml mode
+        assert msgs[2]["role"] == "assistant"
+        assert "<answer>2</answer>" in msgs[2]["content"]
+
+    def test_inputs_helper_excludes_history_field(self):
+        class ChatSig(dspy.Signature):
+            question: str = dspy.InputField()
+            history: dspy.History = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "user", "content": "{inputs(style='yaml')}"},
+            ],
+        )
+
+        history = dspy.History(messages=[{"question": "Q1", "answer": "A1"}])
+        msgs = adapter.format(
+            ChatSig,
+            demos=[],
+            inputs={"question": "Q2", "history": history},
+        )
+
+        content = msgs[0]["content"]
+        assert "question:" in content
+        assert "history:" not in content
+
 
 # ===========================================================================
 # parse() — JSON mode

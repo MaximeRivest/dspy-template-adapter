@@ -453,7 +453,10 @@ class TemplateAdapter(Adapter):
     @staticmethod
     def _render_inputs(ctx: dict[str, Any], signature: type[Signature], style: str = "default", **kwargs) -> str:
         parts = []
-        for name in signature.input_fields:
+        for name, field_info in signature.input_fields.items():
+            # History is rendered via {history(...)} or {"role": "history"}, not {inputs()}
+            if field_info.annotation == History:
+                continue
             val = ctx.get(name, "")
             if style == "xml":
                 parts.append(f"<{name}>{val}</{name}>")
@@ -656,16 +659,26 @@ class TemplateAdapter(Adapter):
 
     # --- History expansion ---
 
-    @staticmethod
     def _expand_history(
+        self,
         signature: type[Signature],
         history: History,
     ) -> list[dict[str, Any]]:
+        """Expand dspy.History into user/assistant message pairs.
+
+        Assistant turn formatting follows parse_mode for consistency with demos:
+        - xml      -> XML tags
+        - full_text (single output field) -> raw text
+        - otherwise -> JSON object
+        """
         messages = []
         for msg in history.messages:
             # User message: input fields from the history entry
             user_parts = []
-            for name in signature.input_fields:
+            for name, field_info in signature.input_fields.items():
+                # Never render nested history objects in history expansion
+                if field_info.annotation == History:
+                    continue
                 if name in msg:
                     user_parts.append(f"{name}: {msg[name]}")
             if user_parts:
@@ -677,10 +690,19 @@ class TemplateAdapter(Adapter):
                 if name in msg:
                     out_parts[name] = msg[name]
             if out_parts:
-                messages.append({
-                    "role": "assistant",
-                    "content": json.dumps(serialize_for_json(out_parts), ensure_ascii=False),
-                })
+                if self.parse_mode == "xml":
+                    parts = [f"<{k}>{v}</{k}>" for k, v in out_parts.items()]
+                    messages.append({"role": "assistant", "content": "\n".join(parts)})
+                elif self.parse_mode == "full_text" and len(out_parts) == 1:
+                    messages.append({
+                        "role": "assistant",
+                        "content": str(next(iter(out_parts.values()))),
+                    })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": json.dumps(serialize_for_json(out_parts), indent=2, ensure_ascii=False),
+                    })
         return messages
 
     # --- Parsers ---
