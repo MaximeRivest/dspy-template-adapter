@@ -148,6 +148,25 @@ class TemplateAdapter(Adapter):
         """
         return self.format(signature, demos or [], inputs or {})
 
+    def _get_history_field_name(self, signature: type[Signature]) -> str | None:
+        """Find the history field name with a local fallback.
+
+        We prefer the base Adapter implementation when available for compatibility
+        with DSPy internals, but keep a local fallback to avoid breakage if DSPy
+        refactors the base method name/signature.
+        """
+        base_method = getattr(super(), "_get_history_field_name", None)
+        if callable(base_method):
+            try:
+                return base_method(signature)
+            except Exception:
+                pass
+
+        for name, field in signature.input_fields.items():
+            if field.annotation == History:
+                return name
+        return None
+
     # ------------------------------------------------------------------
     # format()  — the core override
     # ------------------------------------------------------------------
@@ -157,6 +176,7 @@ class TemplateAdapter(Adapter):
         signature: type[Signature],
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
+        **kwargs,
     ) -> list[dict[str, Any]]:
         inputs = dict(inputs)  # shallow copy — we may mutate (pop history)
 
@@ -197,10 +217,12 @@ class TemplateAdapter(Adapter):
 
             # ── Regular message ──
             content = tmpl.get("content", "")
-            rendered_content = self._render(content, ctx, signature, demos, history_obj)
-            if self._render_used_demos:
+            rendered_content, used_demos, used_history = self._render(
+                content, ctx, signature, demos, history_obj
+            )
+            if used_demos:
                 demos_injected = True
-            if self._render_used_history:
+            if used_history:
                 history_consumed = True
             rendered.append({"role": role, "content": rendered_content})
 
@@ -239,7 +261,7 @@ class TemplateAdapter(Adapter):
     # parse()
     # ------------------------------------------------------------------
 
-    def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+    def parse(self, signature: type[Signature], completion: str, **kwargs) -> dict[str, Any]:
         if callable(self.parse_mode) and not isinstance(self.parse_mode, str):
             return self.parse_mode(signature, completion)
 
@@ -248,9 +270,9 @@ class TemplateAdapter(Adapter):
         if self.parse_mode == "chat":
             return self._parse_chat(signature, completion)
         if self.parse_mode == "xml":
-            return self._parse_xml(signature, completion)
+            return self._parse_xml(signature, self._strip_markdown_code_fences(completion))
         # Default: json
-        return self._parse_json(signature, completion)
+        return self._parse_json(signature, self._strip_markdown_code_fences(completion))
 
     # ------------------------------------------------------------------
     # format_finetune_data()
@@ -262,6 +284,7 @@ class TemplateAdapter(Adapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
         outputs: dict[str, Any],
+        **kwargs,
     ) -> dict[str, list[Any]]:
         messages = self.format(signature=signature, demos=demos, inputs=inputs)
         # Build assistant message matching parse_mode
@@ -355,9 +378,6 @@ class TemplateAdapter(Adapter):
 
     # --- Template rendering ---
 
-    _render_used_demos: bool = False
-    _render_used_history: bool = False
-
     def _render(
         self,
         template: str,
@@ -365,23 +385,26 @@ class TemplateAdapter(Adapter):
         signature: type[Signature],
         demos: list[dict[str, Any]],
         history: History | None = None,
-    ) -> str:
-        """Two-pass rendering: template functions, then variable interpolation."""
-        self._render_used_demos = False
-        self._render_used_history = False
+    ) -> tuple[str, bool, bool]:
+        """Two-pass rendering: template functions, then variable interpolation.
 
+        Returns:
+            rendered_text, used_demos, used_history
+        """
         # Escape literal double braces {{ / }} so str.format_map doesn't consume them
         text = template.replace("{{", _ESCAPED_BRACE_OPEN).replace("}}", _ESCAPED_BRACE_CLOSE)
 
         # Pass 1: template functions  {func_name(...)}
-        text = self._eval_template_functions(text, ctx, signature, demos, history)
+        text, used_demos, used_history = self._eval_template_functions(
+            text, ctx, signature, demos, history
+        )
 
         # Pass 2: simple variable interpolation  {field_name}
         text = text.format_map(_SafeDict(ctx))
 
         # Restore escaped braces
         text = text.replace(_ESCAPED_BRACE_OPEN, "{").replace(_ESCAPED_BRACE_CLOSE, "}")
-        return text
+        return text, used_demos, used_history
 
     def _eval_template_functions(
         self,
@@ -390,8 +413,13 @@ class TemplateAdapter(Adapter):
         signature: type[Signature],
         demos: list[dict[str, Any]],
         history: History | None = None,
-    ) -> str:
+    ) -> tuple[str, bool, bool]:
+        used_demos = False
+        used_history = False
+
         def _replace(match: re.Match) -> str:
+            nonlocal used_demos, used_history
+
             func_name = match.group(1)
             raw_args = match.group(2).strip()
             kwargs = _parse_func_kwargs(raw_args) if raw_args else {}
@@ -402,10 +430,10 @@ class TemplateAdapter(Adapter):
             elif func_name == "outputs":
                 result = self._render_outputs(signature, **kwargs)
             elif func_name == "demos":
-                self._render_used_demos = True
+                used_demos = True
                 result = self._render_demos_inline(demos, signature, **kwargs)
             elif func_name == "history":
-                self._render_used_history = True
+                used_history = True
                 result = self._render_history_inline(history, signature, **kwargs)
             elif func_name in self._custom_helpers:
                 result = str(self._custom_helpers[func_name](ctx=ctx, signature=signature, demos=demos, **kwargs))
@@ -417,7 +445,8 @@ class TemplateAdapter(Adapter):
             # Unknown function — leave untouched
             return match.group(0)
 
-        return _TEMPLATE_FUNC_RE.sub(_replace, text)
+        new_text = _TEMPLATE_FUNC_RE.sub(_replace, text)
+        return new_text, used_demos, used_history
 
     # --- Template functions ---
 
@@ -655,6 +684,30 @@ class TemplateAdapter(Adapter):
         return messages
 
     # --- Parsers ---
+
+    @staticmethod
+    def _strip_markdown_code_fences(text: str) -> str:
+        """Strip common markdown code fences around model output.
+
+        Handles patterns like:
+            ```json\n{...}\n```
+            ```xml\n<answer>...</answer>\n```
+            ```\n...\n```
+        """
+        stripped = text.strip()
+        if not stripped.startswith("```"):
+            return text
+
+        # Remove first fence line
+        lines = stripped.splitlines()
+        if not lines:
+            return text
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        # Remove trailing fence if present
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
 
     def _parse_json(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         """Extract a JSON object from the completion and map to output fields."""

@@ -6,13 +6,15 @@ A DSPy Adapter that gives you **exact control over the messages sent to the LM**
 pip install dspy-template-adapter
 ```
 
-## Why?
+## Why
 
 DSPy's built-in adapters (`ChatAdapter`, `JSONAdapter`) rewrite your prompt into DSPy's own scaffolding format (`[[ ## field ## ]]` markers, field descriptions, etc.). This is great for optimization, but it means you can't reproduce the exact API calls from a vanilla OpenAI/Anthropic prompt.
 
 `TemplateAdapter` solves this: **your messages are the prompt**. The signature defines the I/O contract, the adapter renders your templates, and DSPy handles the rest (caching, tracing, retries, evaluation, optimization).
 
 ## Quickstart
+
+
 
 ```python
 import dspy
@@ -38,8 +40,15 @@ summarizer = Predict(Summarize, adapter=adapter)
 
 # 4. Configure LM and call
 dspy.configure(lm=dspy.LM("gpt-4.1-nano"))
-out = summarizer(text="DSPy is a framework for programming language models.")
+out = summarizer(text="DSPy is a framework for programming language models.tewett")
 print(out.summary)
+```
+
+```output:exec-1771857576383-7bokr
+DSPy is a framework for programming language models.
+```
+
+```output:exec-1771857584845-zcf78
 ```
 
 What happens under the hood:
@@ -67,6 +76,7 @@ Inside message `content` strings, you can use:
 | `{inputs()}` | Renders all input fields. Supports `style='yaml'`, `style='json'`, `style='xml'`, or default |
 | `{outputs()}` | Renders output field descriptions. Supports `style='schema'`, `style='xml'` (+ optional `wrap`), or default |
 | `{demos()}` | Renders few-shot demos inline. Supports `style='json'`, `style='yaml'`, `style='xml'`, or default |
+| `{history()}` | Renders conversation history inline. Supports `style='json'`, `style='yaml'`, `style='xml'`, or default |
 | `{my_helper()}` | Calls a custom function registered with `register_helper()` |
 | `{{` / `}}` | Literal braces (escaped) |
 
@@ -360,6 +370,10 @@ DSPy optimizers like **MIPRO** and **COPRO** rewrite the signature's instruction
 
 ## Conversation History
 
+This adapter pairs naturally with [`dspy-session`](https://github.com/MaximeRivest/dspy-session) for automatic turn state.
+For a full end-to-end pairing guide, see:
+- https://github.com/MaximeRivest/dspy-session/blob/main/docs/template-adapter-integration.md
+
 For multi-turn chatbots, use `dspy.History` and the `{"role": "history"}` directive:
 
 ```python
@@ -385,6 +399,21 @@ resp = chat(question="What is 2+2?", history=history)
 ```
 
 The directive expands each history entry into user/assistant message pairs. If omitted, history is auto-injected before the last user message.
+
+You can also render history inline inside any message with `{history()}`:
+
+```python
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "Conversation so far:\n{history(style='yaml')}"},
+        {"role": "user", "content": "{question}"},
+    ],
+    parse_mode="full_text",
+)
+```
+
+Supported styles for `{history(...)}`: `default`, `json`, `yaml`, `xml`.
+When history is consumed with `{history(...)}`, it is not auto-injected again.
 
 ## Image Support
 

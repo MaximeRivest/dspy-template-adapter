@@ -347,6 +347,12 @@ class TestParseJson:
         result = adapter.parse(Summarize, 'Here is my answer: {"summary": "test"} done.')
         assert result == {"summary": "test"}
 
+    def test_json_inside_markdown_fence(self):
+        adapter = TemplateAdapter(messages=[{"role": "user", "content": ""}], parse_mode="json")
+        completion = "```json\n{\"summary\": \"hello\"}\n```"
+        result = adapter.parse(Summarize, completion)
+        assert result == {"summary": "hello"}
+
     def test_json_multi_field(self):
         adapter = TemplateAdapter(messages=[{"role": "user", "content": ""}], parse_mode="json")
         completion = '{"category": "Billing", "priority": "HIGH"}'
@@ -397,6 +403,12 @@ class TestParseXml:
         adapter = TemplateAdapter(messages=[{"role": "user", "content": ""}], parse_mode="xml")
         result = adapter.parse(Summarize, "Sure, here you go:\n<summary>the answer</summary>\nDone!")
         assert result == {"summary": "the answer"}
+
+    def test_xml_inside_markdown_fence(self):
+        adapter = TemplateAdapter(messages=[{"role": "user", "content": ""}], parse_mode="xml")
+        completion = "```xml\n<summary>wrapped</summary>\n```"
+        result = adapter.parse(Summarize, completion)
+        assert result == {"summary": "wrapped"}
 
     def test_xml_multi_field(self):
         adapter = TemplateAdapter(messages=[{"role": "user", "content": ""}], parse_mode="xml")
