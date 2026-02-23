@@ -301,6 +301,35 @@ class TestHistory:
         assert "2" in msgs[2]["content"]
         assert "2+2" in msgs[3]["content"]
 
+    def test_history_function_inline_prevents_auto_injection(self):
+        class ChatSig(dspy.Signature):
+            question: str = dspy.InputField()
+            history: dspy.History = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        adapter = TemplateAdapter(
+            messages=[
+                {"role": "system", "content": "History:\n{history(style='yaml')}"},
+                {"role": "user", "content": "{question}"},
+            ],
+        )
+        history = dspy.History(messages=[
+            {"question": "What is 1+1?", "answer": "2"},
+        ])
+        msgs = adapter.format(
+            ChatSig,
+            demos=[],
+            inputs={"question": "What is 2+2?", "history": history},
+        )
+
+        # history() consumed history inline, so there should be only 2 messages
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "system"
+        assert "What is 1+1?" in msgs[0]["content"]
+        assert "2" in msgs[0]["content"]
+        assert msgs[1]["role"] == "user"
+        assert "What is 2+2?" in msgs[1]["content"]
+
 
 # ===========================================================================
 # parse() — JSON mode

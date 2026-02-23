@@ -162,20 +162,24 @@ class TemplateAdapter(Adapter):
 
         # --- Extract History if present ---
         history_messages: list[dict[str, Any]] = []
+        history_obj: History | None = None
         history_field_name = self._get_history_field_name(signature)
         if history_field_name and history_field_name in inputs:
-            history_obj = inputs.pop(history_field_name)
-            if isinstance(history_obj, History):
-                history_messages = self._expand_history(signature, history_obj)
-            elif isinstance(history_obj, list):
-                history_messages = history_obj
+            raw_history = inputs.pop(history_field_name)
+            if isinstance(raw_history, History):
+                history_obj = raw_history
+                history_messages = self._expand_history(signature, raw_history)
+            elif isinstance(raw_history, list):
+                history_obj = History(messages=raw_history)
+                history_messages = raw_history
 
         # --- Build the rendering context ---
-        ctx = self._build_context(signature, demos, inputs)
+        ctx = self._build_context(signature, demos, inputs, history_obj)
 
         # --- Walk message templates, expanding directives ---
         rendered: list[dict[str, Any]] = []
         demos_injected = False
+        history_consumed = False
 
         for tmpl in self.message_templates:
             role = tmpl.get("role", "")
@@ -193,9 +197,11 @@ class TemplateAdapter(Adapter):
 
             # ── Regular message ──
             content = tmpl.get("content", "")
-            rendered_content = self._render(content, ctx, signature, demos)
+            rendered_content = self._render(content, ctx, signature, demos, history_obj)
             if self._render_used_demos:
                 demos_injected = True
+            if self._render_used_history:
+                history_consumed = True
             rendered.append({"role": role, "content": rendered_content})
 
         # --- Auto-inject demos if not consumed by template ---
@@ -213,7 +219,7 @@ class TemplateAdapter(Adapter):
                 rendered = demo_msgs + rendered
 
         # --- Inject conversation history if not consumed by template ---
-        if history_messages and not any(
+        if history_messages and not history_consumed and not any(
             t.get("role") == "history" for t in self.message_templates
         ):
             last_user_idx = None
@@ -331,6 +337,7 @@ class TemplateAdapter(Adapter):
         signature: type[Signature],
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
+        history: History | None = None,
     ) -> dict[str, Any]:
         """Build the variable context for template rendering."""
         ctx: dict[str, Any] = {}
@@ -342,11 +349,14 @@ class TemplateAdapter(Adapter):
                 ctx[name] = ""
         # The optimisable instruction slot
         ctx["instruction"] = signature.instructions or ""
+        # Optional history object for custom helpers / {history()} template function
+        ctx["history"] = history if history is not None else ""
         return ctx
 
     # --- Template rendering ---
 
     _render_used_demos: bool = False
+    _render_used_history: bool = False
 
     def _render(
         self,
@@ -354,15 +364,17 @@ class TemplateAdapter(Adapter):
         ctx: dict[str, Any],
         signature: type[Signature],
         demos: list[dict[str, Any]],
+        history: History | None = None,
     ) -> str:
         """Two-pass rendering: template functions, then variable interpolation."""
         self._render_used_demos = False
+        self._render_used_history = False
 
         # Escape literal double braces {{ / }} so str.format_map doesn't consume them
         text = template.replace("{{", _ESCAPED_BRACE_OPEN).replace("}}", _ESCAPED_BRACE_CLOSE)
 
         # Pass 1: template functions  {func_name(...)}
-        text = self._eval_template_functions(text, ctx, signature, demos)
+        text = self._eval_template_functions(text, ctx, signature, demos, history)
 
         # Pass 2: simple variable interpolation  {field_name}
         text = text.format_map(_SafeDict(ctx))
@@ -377,6 +389,7 @@ class TemplateAdapter(Adapter):
         ctx: dict[str, Any],
         signature: type[Signature],
         demos: list[dict[str, Any]],
+        history: History | None = None,
     ) -> str:
         def _replace(match: re.Match) -> str:
             func_name = match.group(1)
@@ -391,6 +404,9 @@ class TemplateAdapter(Adapter):
             elif func_name == "demos":
                 self._render_used_demos = True
                 result = self._render_demos_inline(demos, signature, **kwargs)
+            elif func_name == "history":
+                self._render_used_history = True
+                result = self._render_history_inline(history, signature, **kwargs)
             elif func_name in self._custom_helpers:
                 result = str(self._custom_helpers[func_name](ctx=ctx, signature=signature, demos=demos, **kwargs))
 
@@ -482,6 +498,49 @@ class TemplateAdapter(Adapter):
                         lines.append(f"  {k}: {demo[k]}")
                 rendered.append("\n".join(lines))
         return "\n\n".join(rendered)
+
+    @staticmethod
+    def _render_history_inline(
+        history: History | None,
+        signature: type[Signature],
+        style: str = "default",
+        **kwargs,
+    ) -> str:
+        """Render dspy.History inline inside a message via {history(...)}."""
+        if history is None or not history.messages:
+            return ""
+
+        messages = history.messages
+
+        if style == "json":
+            return json.dumps(serialize_for_json(messages), indent=2, ensure_ascii=False)
+
+        if style == "yaml":
+            blocks = []
+            for i, msg in enumerate(messages, 1):
+                lines = [f"- turn: {i}"]
+                for k, v in msg.items():
+                    lines.append(f"  {k}: {v}")
+                blocks.append("\n".join(lines))
+            return "\n".join(blocks)
+
+        if style == "xml":
+            blocks = []
+            for msg in messages:
+                fields = []
+                for k, v in msg.items():
+                    fields.append(f"  <{k}>{v}</{k}>")
+                blocks.append("<turn>\n" + "\n".join(fields) + "\n</turn>")
+            return "\n".join(blocks)
+
+        # default style
+        blocks = []
+        for i, msg in enumerate(messages, 1):
+            lines = [f"Turn {i}:"]
+            for k, v in msg.items():
+                lines.append(f"  {k}: {v}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     # --- Directive expansion ---
 
